@@ -1,16 +1,29 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-import cdb
 import codecs
 import getopt
 import marisa
+import mmap
 import os
 import struct
 import sys
 
 kBOSString = '<s>'
 kEOSString = '</s>'
+kScoreSize = 2  # sizeof(unsigned short)
+kPackString = 'H'  # unsigned short
+kScoreMax = 256 ** kScoreSize - 1
+kScoreFactor = kScoreMax / -20  # e ** -20 is small enough as a probability
+
+def PackScore(orig_score):
+    score = orig_score * kScoreFactor
+    if score < 0:
+        score = 0
+    if score > kScoreMax:
+        score = kScoreMax
+    return struct.pack(kPackString, score)
+
 
 class Pair(object):
     def __init__(self, src_str, dst_str, start_pos, end_pos):
@@ -29,7 +42,7 @@ class LM(object):
     kLookupTrieExt = '.lookup'
     kPairTrieExt = '.pair'
     kNgramTrieExt = '.ngram'
-    kNgramDicExt = '.ngram_dic'
+    kNgramScoresExt = '.scores'
 
     def BuildDics(self, dicname_prefix, vocab_file, lm_file):
         print 'Started loading vocabulary...'
@@ -72,14 +85,18 @@ class LM(object):
             keyset_ngram.push_back(' '.join(pairs) + ' ')
         fin_lm.close()
         print 'Loaded ngram strings.'
+        ngram_size = keyset_ngram.num_keys()
 
         self.trie_ngram.build(keyset_ngram)
         self.trie_ngram.save(dicname_prefix + self.kNgramTrieExt)
 
         fin_lm = open(lm_file, 'r')
         agent = marisa.Agent()
-        dic_ngram_maker = cdb.cdbmake(dicname_prefix + self.kNgramDicExt,
-                                      dicname_prefix + self.kNgramDicExt + '.tmp')
+        fout_scores = open(dicname_prefix + self.kNgramScoresExt, 'wb')
+        fout_scores.write('\0' * ngram_size * kScoreSize * 2)
+        fout_scores.close()
+        fout_scores = open(dicname_prefix + self.kNgramScoresExt, 'r+b')
+        mmap_scores = mmap.mmap(fout_scores.fileno(), 0)
 
         print 'Started loading ngram scores...'
         count = 0
@@ -96,22 +113,25 @@ class LM(object):
             pairs.reverse()
             agent.set_query(' '.join(pairs) + ' ')
             self.trie_ngram.lookup(agent)
+            id = agent.key_id()
             score = float(elems[0])
             backoff = float(elems[2]) if elems[2] != '' else 0
-            key = struct.pack('l', agent.key_id())
-            value = struct.pack('dd', score, backoff)
-            dic_ngram_maker.add(key, value)
-
-        dic_ngram_maker.finish()
+            mmap_scores[id * 2 * kScoreSize:
+                        (id * 2 + 1) * kScoreSize] = PackScore(score)
+            mmap_scores[(id * 2 + 1) * kScoreSize:
+                        (id * 2 + 2) * kScoreSize] = PackScore(backoff)
+        
+        mmap_scores.close()
+        fout_scores.close()
         print 'Loaded ngram scores.'
-        self.dic_ngram = cdb.init(dicname_prefix + self.kNgramDicExt)
         return
 
     def LoadDics(self, dicname_prefix):
         self.trie_lookup.load(dicname_prefix + self.kLookupTrieExt)
         self.trie_pair.load(dicname_prefix + self.kPairTrieExt)
         self.trie_ngram.load(dicname_prefix + self.kNgramTrieExt)
-        self.dic_ngram = cdb.init(dicname_prefix + self.kNgramDicExt)
+        self.fp_scores = open(dicname_prefix + self.kNgramScoresExt, 'rb')
+        self.mmap_scores = mmap.mmap(self.fp_scores.fileno(), 0, prot=mmap.PROT_READ)
         return
 
     def GetNgramScores(self, ngram_list, prev_backoff_scores):
@@ -126,8 +146,14 @@ class LM(object):
             ngram_str = agent.key_str()
             if ngram_str[-1] != ' ':
                 continue
-            key = struct.pack('l', agent.key_id())
-            (ngram_score, ngram_backoff) = struct.unpack('dd', self.dic_ngram.get(key))
+            id = agent.key_id()
+            (ngram_score, ngram_backoff) = struct.unpack(
+                kPackString * 2,
+                self.mmap_scores[id * 2 * kScoreSize:
+                                 (id * 2 + 2) * kScoreSize])
+            ngram_score *= kScoreFactor
+            ngram_backoff *= kScoreFactor
+                
             n = ngram_str.count(' ')
             if n > max_n:
                 max_n = n
@@ -157,18 +183,18 @@ class LM(object):
         self.trie_lookup = marisa.Trie()
         self.trie_pair = marisa.Trie()
         self.trie_ngram = marisa.Trie()
-        self.dic_ngram = None
+        self.fp_scores = None
+        self.mmap_scores = None
 
         dic_exists = True if not force_build else False
         for ext in (self.kLookupTrieExt, self.kPairTrieExt, self.kNgramTrieExt,
-                    self.kNgramDicExt):
+                    self.kNgramScoresExt):
             if not os.path.isfile(dicname_prefix + ext):
                 dic_exists = False
 
-        if dic_exists:
-            self.LoadDics(dicname_prefix)
-        else:
+        if not dic_exists:
             self.BuildDics(dicname_prefix, vocab_file, lm_file)
+        self.LoadDics(dicname_prefix)
 
 
 class PairManager(object):
