@@ -11,18 +11,57 @@ import sys
 
 kBOSString = '<s>'
 kEOSString = '</s>'
-kScoreSize = 2  # sizeof(unsigned short)
-kPackString = 'H'  # unsigned short
+kScoreSize = 1  # sizeof(unsigned char)
+kPackString = 'B'  # unsigned char
 kScoreMax = 256 ** kScoreSize - 1
-kScoreFactor = kScoreMax / -20  # e ** -20 is small enough as a probability
+kScoreFactor = kScoreMax / -7  # e ** -7 is small enough as a probability
 
-def PackScore(orig_score):
-    score = orig_score * kScoreFactor
-    if score < 0:
-        score = 0
-    if score > kScoreMax:
-        score = kScoreMax
-    return struct.pack(kPackString, score)
+def PackScores(score, backoff_score):
+    for s in (score, backoff_score):
+        s *= kScoreFactor
+        if s < 0:
+            s = 0
+        elif s > kScoreMax:
+            s = kScoreMax
+    return struct.pack(kPackString * 2, score, backoff_score)
+
+
+def UnpackScores(byte_seq):
+    scores = struct.unpack(kPackString * 2, byte_seq)
+    return (s * kScoreFactor for s in scores)
+
+
+class MMapStore(object):
+    def __init__(self, filename, record_size, record_num = 0, is_writing = False):
+        self.record_size = record_size
+        self.is_writing = is_writing
+        if is_writing and record_num == 0:
+            raise ValueError
+
+        if is_writing:
+            self.fp = open(filename, 'wb')
+            self.fp.write('\0' * record_size * record_num)
+            self.fp.close()
+            self.fp = open(filename, 'r+b')
+            self.mmap = mmap.mmap(self.fp.fileno(), 0, access=mmap.ACCESS_WRITE)
+
+        else:
+            self.fp = open(filename, 'rb')
+            self.mmap = mmap.mmap(self.fp.fileno(), 0, access=mmap.ACCESS_READ)
+
+    def WriteRecord(self, record_no, record):
+        if not self.is_writing:
+            raise TypeError
+        self.mmap[record_no * self.record_size:
+                  (record_no + 1) * self.record_size] = record
+
+    def ReadRecord(self, record_no):
+        return self.mmap[record_no * self.record_size:
+                         (record_no + 1) * self.record_size]
+
+    def Close(self):
+        self.mmap.close()
+        self.fp.close()
 
 
 class Pair(object):
@@ -62,12 +101,14 @@ class LM(object):
 
         fin.close()
         print 'Loaded vocabulary.'
+        
+        trie_lookup = marisa.Trie()
+        trie_lookup.build(keyset_lookup)
+        trie_lookup.save(dicname_prefix + self.kLookupTrieExt)
 
-        self.trie_lookup.build(keyset_lookup)
-        self.trie_lookup.save(dicname_prefix + self.kLookupTrieExt)
-
-        self.trie_pair.build(keyset_pair)
-        self.trie_pair.save(dicname_prefix + self.kPairTrieExt)
+        trie_pair = marisa.Trie()
+        trie_pair.build(keyset_pair)
+        trie_pair.save(dicname_prefix + self.kPairTrieExt)
 
         keyset_ngram = marisa.Keyset()
 
@@ -87,16 +128,16 @@ class LM(object):
         print 'Loaded ngram strings.'
         ngram_size = keyset_ngram.num_keys()
 
-        self.trie_ngram.build(keyset_ngram)
-        self.trie_ngram.save(dicname_prefix + self.kNgramTrieExt)
+        trie_ngram = marisa.Trie()
+        trie_ngram.build(keyset_ngram)
+        trie_ngram.save(dicname_prefix + self.kNgramTrieExt)
 
         fin_lm = open(lm_file, 'r')
         agent = marisa.Agent()
-        fout_scores = open(dicname_prefix + self.kNgramScoresExt, 'wb')
-        fout_scores.write('\0' * ngram_size * kScoreSize * 2)
-        fout_scores.close()
-        fout_scores = open(dicname_prefix + self.kNgramScoresExt, 'r+b')
-        mmap_scores = mmap.mmap(fout_scores.fileno(), 0)
+
+        ngram_scores = MMapStore(dicname_prefix + self.kNgramScoresExt,
+                                 kScoreSize, ngram_size,
+                                 is_writing = True)
 
         print 'Started loading ngram scores...'
         count = 0
@@ -112,17 +153,14 @@ class LM(object):
             pairs = elems[1].split(' ')
             pairs.reverse()
             agent.set_query(' '.join(pairs) + ' ')
-            self.trie_ngram.lookup(agent)
+            trie_ngram.lookup(agent)
             id = agent.key_id()
             score = float(elems[0])
-            backoff = float(elems[2]) if elems[2] != '' else 0
-            mmap_scores[id * 2 * kScoreSize:
-                        (id * 2 + 1) * kScoreSize] = PackScore(score)
-            mmap_scores[(id * 2 + 1) * kScoreSize:
-                        (id * 2 + 2) * kScoreSize] = PackScore(backoff)
+            backoff_score = float(elems[2]) if elems[2] != '' else 0
+            ngram_scores.WriteRecord(id, PackScores(score, backoff_score))
         
         mmap_scores.close()
-        fout_scores.close()
+        self.fp.close()
         print 'Loaded ngram scores.'
         return
 
@@ -130,8 +168,9 @@ class LM(object):
         self.trie_lookup.load(dicname_prefix + self.kLookupTrieExt)
         self.trie_pair.load(dicname_prefix + self.kPairTrieExt)
         self.trie_ngram.load(dicname_prefix + self.kNgramTrieExt)
-        self.fp_scores = open(dicname_prefix + self.kNgramScoresExt, 'rb')
-        self.mmap_scores = mmap.mmap(self.fp_scores.fileno(), 0, prot=mmap.PROT_READ)
+        self.ngram_scores = MMapStore(dicname_prefix + self.kNgramScoresExt,
+                                      kScoreSize * 2,
+                                      is_writing = False)
         return
 
     def GetNgramScores(self, ngram_list, prev_backoff_scores):
@@ -144,15 +183,9 @@ class LM(object):
         score = 0.0
         while self.trie_ngram.common_prefix_search(agent):
             ngram_str = agent.key_str()
-            if ngram_str[-1] != ' ':
-                continue
             id = agent.key_id()
-            (ngram_score, ngram_backoff) = struct.unpack(
-                kPackString * 2,
-                self.mmap_scores[id * 2 * kScoreSize:
-                                 (id * 2 + 2) * kScoreSize])
-            ngram_score *= kScoreFactor
-            ngram_backoff *= kScoreFactor
+            (ngram_score, ngram_backoff) = UnpackScores(
+                self.ngram_scores.ReadRecord(id))
                 
             n = ngram_str.count(' ')
             if n > max_n:
