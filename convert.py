@@ -12,18 +12,21 @@ import sys
 kBOSString = '<s>'
 kEOSString = '</s>'
 kScoreSize = 1  # sizeof(unsigned char)
+kRecordSize = kScoreSize * 2  # score and backoff score
 kPackString = 'B'  # unsigned char
-kScoreMax = 256 ** kScoreSize - 1
+kScoreMax = (256 ** kScoreSize) - 1
 kScoreFactor = kScoreMax / -7  # e ** -7 is small enough as a probability
 
-def PackScores(score, backoff_score):
-    for s in (score, backoff_score):
+def PackScores(scores):
+    def ConvertScore(s):
         s *= kScoreFactor
         if s < 0:
             s = 0
         elif s > kScoreMax:
             s = kScoreMax
-    return struct.pack(kPackString * 2, score, backoff_score)
+        return s
+
+    return struct.pack(kPackString * 2, *(ConvertScore(s) for s in scores))
 
 
 def UnpackScores(byte_seq):
@@ -136,7 +139,8 @@ class LM(object):
         agent = marisa.Agent()
 
         ngram_scores = MMapStore(dicname_prefix + self.kNgramScoresExt,
-                                 kScoreSize, ngram_size,
+                                 kRecordSize,
+                                 ngram_size,
                                  is_writing = True)
 
         print 'Started loading ngram scores...'
@@ -157,10 +161,9 @@ class LM(object):
             id = agent.key_id()
             score = float(elems[0])
             backoff_score = float(elems[2]) if elems[2] != '' else 0
-            ngram_scores.WriteRecord(id, PackScores(score, backoff_score))
+            ngram_scores.WriteRecord(id, PackScores((score, backoff_score)))
         
-        mmap_scores.close()
-        self.fp.close()
+        ngram_scores.Close()
         print 'Loaded ngram scores.'
         return
 
@@ -169,7 +172,7 @@ class LM(object):
         self.trie_pair.load(dicname_prefix + self.kPairTrieExt)
         self.trie_ngram.load(dicname_prefix + self.kNgramTrieExt)
         self.ngram_scores = MMapStore(dicname_prefix + self.kNgramScoresExt,
-                                      kScoreSize * 2,
+                                      kRecordSize,
                                       is_writing = False)
         return
 
