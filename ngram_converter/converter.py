@@ -11,9 +11,8 @@ kEOSString = '</s>'
 kScoreSize = 1  # sizeof(unsigned char)
 kRecordSize = kScoreSize * 2  # score and backoff score
 kPackString = 'B'  # unsigned char
-kScoreMax = 256 ** kScoreSize - 1
+kScoreMax = (256 ** kScoreSize) - 1
 kScoreFactor = kScoreMax / -7  # e ** -7 is small enough as a probability
-
 
 def PackScores(scores):
     def ConvertScore(s):
@@ -162,8 +161,9 @@ class LM(object):
             backoff_score = float(elems[2]) if elems[2] != '' else 0
             ngram_scores.WriteRecord(id, PackScores((score, backoff_score)))
         
-        self.mmap.close()
-        self.fp.close()
+        ngram_scores.Close()
+        fin_lm.close()
+
         print 'Loaded ngram scores.'
         return
 
