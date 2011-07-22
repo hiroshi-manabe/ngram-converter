@@ -167,7 +167,10 @@ class LM(object):
         print 'Loaded ngram scores.'
         return
 
-    def LoadDics(self, dicname_prefix):
+    def LoadDics(self, dicname_prefix, order):
+        if order <= 0:
+            raise ValueError
+        self.order = order
         self.trie_lookup = marisa.Trie()
         self.trie_lookup.load(dicname_prefix + self.kLookupTrieExt)
 
