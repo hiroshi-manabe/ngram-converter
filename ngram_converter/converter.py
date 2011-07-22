@@ -1,8 +1,5 @@
 #!/usr/bin/python
-# -*- coding: utf-8 -*-
 
-import codecs
-import getopt
 import marisa
 import mmap
 import os
@@ -12,18 +9,22 @@ import sys
 kBOSString = '<s>'
 kEOSString = '</s>'
 kScoreSize = 1  # sizeof(unsigned char)
+kRecordSize = kScoreSize * 2  # score and backoff score
 kPackString = 'B'  # unsigned char
 kScoreMax = 256 ** kScoreSize - 1
 kScoreFactor = kScoreMax / -7  # e ** -7 is small enough as a probability
 
-def PackScores(score, backoff_score):
-    for s in (score, backoff_score):
+
+def PackScores(scores):
+    def ConvertScore(s):
         s *= kScoreFactor
         if s < 0:
             s = 0
         elif s > kScoreMax:
             s = kScoreMax
-    return struct.pack(kPackString * 2, score, backoff_score)
+        return s
+
+    return struct.pack(kPackString * 2, *(ConvertScore(s) for s in scores))
 
 
 def UnpackScores(byte_seq):
@@ -76,6 +77,7 @@ class Pair(object):
             return self.src_str
         else:
             return self.src_str + '/' + self.dst_str
+
 
 class LM(object):
     kLookupTrieExt = '.lookup'
@@ -136,7 +138,8 @@ class LM(object):
         agent = marisa.Agent()
 
         ngram_scores = MMapStore(dicname_prefix + self.kNgramScoresExt,
-                                 kScoreSize, ngram_size,
+                                 kRecordSize,
+                                 ngram_size,
                                  is_writing = True)
 
         print 'Started loading ngram scores...'
@@ -157,19 +160,25 @@ class LM(object):
             id = agent.key_id()
             score = float(elems[0])
             backoff_score = float(elems[2]) if elems[2] != '' else 0
-            ngram_scores.WriteRecord(id, PackScores(score, backoff_score))
+            ngram_scores.WriteRecord(id, PackScores((score, backoff_score)))
         
-        mmap_scores.close()
+        self.mmap.close()
         self.fp.close()
         print 'Loaded ngram scores.'
         return
 
     def LoadDics(self, dicname_prefix):
+        self.trie_lookup = marisa.Trie()
         self.trie_lookup.load(dicname_prefix + self.kLookupTrieExt)
+
+        self.trie_pair = marisa.Trie()
         self.trie_pair.load(dicname_prefix + self.kPairTrieExt)
+
+        self.trie_ngram = marisa.Trie()
         self.trie_ngram.load(dicname_prefix + self.kNgramTrieExt)
+
         self.ngram_scores = MMapStore(dicname_prefix + self.kNgramScoresExt,
-                                      kScoreSize * 2,
+                                      kRecordSize,
                                       is_writing = False)
         return
 
@@ -211,23 +220,13 @@ class LM(object):
                 (src, dst) = agent_pair.key_str().split('/')
                 yield Pair(src, dst, start_pos, start_pos + len(src))
 
-    def __init__(self, max_n, dicname_prefix, vocab_file, lm_file, force_build = False):
-        self.max_n = max_n
-        self.trie_lookup = marisa.Trie()
-        self.trie_pair = marisa.Trie()
-        self.trie_ngram = marisa.Trie()
+    def __init__(self):
+        self.max_n = 0
+        self.trie_lookup = None
+        self.trie_pair = None
+        self.trie_ngram = None
         self.fp_scores = None
         self.mmap_scores = None
-
-        dic_exists = True if not force_build else False
-        for ext in (self.kLookupTrieExt, self.kPairTrieExt, self.kNgramTrieExt,
-                    self.kNgramScoresExt):
-            if not os.path.isfile(dicname_prefix + ext):
-                dic_exists = False
-
-        if not dic_exists:
-            self.BuildDics(dicname_prefix, vocab_file, lm_file)
-        self.LoadDics(dicname_prefix)
 
 
 class PairManager(object):
@@ -242,6 +241,7 @@ class PairManager(object):
 
     def GetPairsAt(self, pos):
         return self.pairs[pos]
+
 
 class Node(object):
     def __init__(self, pair, left_node, valid_n, score):
@@ -267,6 +267,7 @@ class Node(object):
 
     def GetDstStr(self):
         return self.pair.dst_str
+
 
 class Lattice(object):
     def __init__(self):
@@ -321,72 +322,10 @@ class Converter(object):
         return ''.join(reversed(dst_str_list))
 
 
-def Usage():
-    print 'convert.py - convert Kana to Kanji or vice versa.'
-    print 'Usage: convert.py ' \
-          '--order=<order> --dicname-prefix=<prefix for the dictionary files> ' \
-          '[--lm=<lm_file>] [--vocab=<vocab_file>] [--force-build] ' \
-          '[--interactive]'
-    print 'Dictionary files with the designated prefix and the extensions ' \
-          '".lookup", ".pair", ".ngram" and ".ngram_dic" will be generated.'
-    print 'If there are files with these names, they will be loaded. In this case, ' \
-          '--lm and --vocab options are not necessary and will be ignored.'
-    print 'Use --force-build to ignore existing files and rebuild ' \
-          'the dictionary files.'
-    print 'If --interactive option is supplied, this program will prompt the user ' \
-          'to type input strings and print the conversion results each time.'
-    print 'Otherwise, it will read input strings from the standard input and output the ' \
-          'results to the standard output.'
-    exit(-2)
-
-
 def main():
-    try:
-        opts, args = getopt.getopt(sys.argv[1:], '',
-                                   ['order=', 'dicname-prefix=', 'vocab=', 'lm=',
-                                    'force-build', 'interactive'])
-    except getopt.GetoptError:
-        Usage()
-        sys.exit(2)
+    print 'A converter class.'
+    exit(0)
 
-    order = 0
-    dicname_prefix = ''
-    lm_file = ''
-    vocab_file = ''
-    force_build = False
-    interactive = False
-
-    for k, v in opts:
-        if k == '--order':
-            order = v
-        elif k == '--dicname-prefix':
-            dicname_prefix = v
-        elif k == '--vocab':
-            vocab_file = v
-        elif k == '--lm':
-            lm_file = v
-        elif k == '--force-build':
-            force_build = True
-        elif k == '--interactive':
-            interactive = True
-
-    if dicname_prefix == '' or order == 0:
-        Usage()
-
-    lm = LM(order, dicname_prefix, vocab_file, lm_file, force_build)
-    converter = Converter(lm)
-
-    if interactive:
-        while True:
-            try:
-                to_convert = raw_input('> ').rstrip('\n')
-                print converter.Convert(to_convert)
-            except EOFError:
-                exit()
-    else:
-        for line in sys.stdin:
-            to_convert = line.rstrip('\n')
-            print converter.Convert(to_convert)
 
 if __name__ == '__main__':
     main()
