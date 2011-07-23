@@ -1,1 +1,20 @@
+ngram-converter
+
 A simple N-gram Kana-Kanji/Kanji-Kana converter.
+
+To test the Kana-Kanji converter with the attached dictionaries:
+
+./converter_sample.py --dicname-prefix=dics/bccwj4_rev_dic --order=4 --interactive
+
+You can build dictionaries from the N-gram data that can be downloaded at http://plata.ar.media.kyoto-u.ac.jp/gologo/lm.html.
+
+1. Convert the files into the SRILM format.
+./process_files.py -n <ngram order> -o <ngram filename> [-r if you want to perform Kana-Kanji conversion] -e euc-jp
+
+2. Build the language model using SRILM.
+ngram-count -order 4 -interpolate -kndiscount -read <ngram filename> -lm <lm filename> -write-vocab <vocabulary filename>
+
+3. Build the conversion dictionaries. You will need "marisa-trie" module.
+./build_dics.py --dicname-prefix=<dictionary filename prefix> --lm=<lm filename> --vocab=<vocab filename>
+
+Refer to converter_sample.py to see how to use the module.
