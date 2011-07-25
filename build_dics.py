@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import ngram_converter.converter
 
 import getopt
