@@ -1,8 +1,8 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 
 import ngram_converter.converter
 
+import codecs
 import getopt
 import sys
 
@@ -10,7 +10,7 @@ def Usage():
     print 'converter_sample.py - convert Kana to Kanji or vice versa.'
     print 'Usage: converter_sample.py ' \
           '--order=<order> --dicname-prefix=<prefix for the dictionary files> ' \
-          '[--interactive]'
+          '[--encoding=<encoding> [--interactive]'
     print 'If --interactive option is supplied, this program will prompt the user ' \
           'to type input strings and print the conversion results each time.'
     print 'Otherwise, it will read input strings from the standard input and output the ' \
@@ -21,13 +21,14 @@ def Usage():
 def main():
     try:
         opts, args = getopt.getopt(sys.argv[1:], '',
-                                   ['order=', 'dicname-prefix=', 'interactive'])
+                                   ['order=', 'dicname-prefix=', 'encoding=', 'interactive'])
     except getopt.GetoptError:
         Usage()
         sys.exit(2)
 
     order = 0
     dicname_prefix = ''
+    encoding = 'utf-8'
     interactive = False
 
     for k, v in opts:
@@ -35,6 +36,8 @@ def main():
             order = v
         elif k == '--dicname-prefix':
             dicname_prefix = v
+        elif k == '--encoding':
+            encoding = v
         elif k == '--interactive':
             interactive = True
 
@@ -64,11 +67,13 @@ def main():
     if interactive:
         while True:
             try:
-                to_convert = raw_input('> ').rstrip('\n')
+                to_convert = raw_input('> ').rstrip('\n').decode(encoding)
                 print converter.Convert(to_convert)
             except EOFError:
                 exit()
     else:
+        sys.stdin = codecs.getreader(encoding)(sys.stdin)
+        sys.stdout = codecs.getwriter(encoding)(sys.stdout)
         for line in sys.stdin:
             to_convert = line.rstrip('\n')
             print converter.Convert(to_convert)

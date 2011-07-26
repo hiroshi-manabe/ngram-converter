@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# coding: utf-8
 
 import marisa
 import mmap
@@ -8,6 +9,7 @@ import sys
 
 kBOSString = '<s>'
 kEOSString = '</s>'
+kUnknownString = 'UNK'
 kScoreSize = 1  # sizeof(unsigned char)
 kRecordSize = kScoreSize * 2  # score and backoff score
 kPackString = 'B'  # unsigned char
@@ -74,8 +76,10 @@ class Pair(object):
     def __str__(self):
         if self.dst_str == '':
             return self.src_str
+        elif self.src_str == kUnknownString:
+            return kUnknownString
         else:
-            return self.src_str + '/' + self.dst_str
+            return self.src_str.encode('utf-8') + '/' + self.dst_str.encode('utf-8')
 
 
 class LM(object):
@@ -216,12 +220,18 @@ class LM(object):
     def GetPairsAt(self, src_str, start_pos):
         agent_lookup = marisa.Agent()
         agent_pair = marisa.Agent()
-        agent_lookup.set_query(src_str[start_pos:])
+        agent_lookup.set_query(src_str[start_pos:].encode('utf-8'))
+        count = 0
+
         while self.trie_lookup.common_prefix_search(agent_lookup):
             agent_pair.set_query(agent_lookup.key_str() + '/')
             while self.trie_pair.predictive_search(agent_pair):
-                (src, dst) = agent_pair.key_str().split('/')
+                (src, dst) = (x.decode('utf-8') for x in agent_pair.key_str().split('/'))
+                count += 1
                 yield Pair(src, dst, start_pos, start_pos + len(src))
+
+        if count == 0:
+            yield Pair(kUnknownString, src_str[start_pos], start_pos, start_pos + 1)
 
     def __init__(self):
         self.max_n = 0
